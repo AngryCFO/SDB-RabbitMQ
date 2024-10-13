@@ -86,7 +86,7 @@ $ cat /etc/hosts
 
 ### Ответ
 
-[Ansible Playbook]( )
+[Ansible Playbook](https://github.com/AngryCFO/SDB-RabbitMQ/blob/44aa8101c1baffb06ee6ae04c488ab3637b468b3/rabbitmq_cluster.yml)
 ```
 ---
 - name: Install and Configure RabbitMQ Cluster
