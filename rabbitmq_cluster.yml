@@ -1,0 +1,119 @@
+---
+- name: Install and Configure RabbitMQ Cluster
+  hosts: rabbitmq_nodes
+  become: true
+  vars:
+    erlang_cookie: "my_super_secret_cookie"
+
+  tasks:
+    - name: Update /etc/hosts with RabbitMQ nodes
+      lineinfile:
+        path: /etc/hosts
+        line: "{{ hostvars[item].ansible_host }} {{ item }}"
+        state: present
+      loop: "{{ groups['rabbitmq_nodes'] }}"
+      when: "'ansible_host' in hostvars[item]"
+
+    - name: Install RabbitMQ
+      apt:
+        name: rabbitmq-server
+        state: present
+        update_cache: yes
+
+    - name: Copy Erlang Cookie
+      copy:
+        content: "{{ erlang_cookie }}"
+        dest: "/var/lib/rabbitmq/.erlang.cookie"
+        owner: rabbitmq
+        group: rabbitmq
+        mode: '0600'
+
+    - name: Restart RabbitMQ
+      become: true
+      service:
+        name: rabbitmq-server
+        state: restarted
+
+    - name: Wait for RabbitMQ to Start
+      wait_for:
+        port: 5672
+        delay: 5
+        timeout: 60
+
+    - name: Enable and start RabbitMQ service
+      service:
+        name: rabbitmq-server
+        enabled: yes
+        state: started
+
+    - name: Check if RabbitMQ Management Plugin is enabled
+      shell: rabbitmq-plugins list -e
+      register: plugins
+      changed_when: false
+      failed_when: false
+
+    - name: Enable RabbitMQ Management Plugin
+      shell: rabbitmq-plugins enable rabbitmq_management
+      when: "'rabbitmq_management' not in plugins.stdout"
+
+    - name: Restart RabbitMQ
+      become: true
+      service:
+        name: rabbitmq-server
+        state: restarted
+
+    - name: Wait for RabbitMQ to Start
+      wait_for:
+        port: 5672
+        delay: 5
+        timeout: 60
+
+    - name: Add RabbitMQ user (rmuser)
+      command: rabbitmqctl add_user rmuser rmpassword
+      when: inventory_hostname == groups['rabbitmq_nodes'][0]
+      ignore_errors: yes
+
+    - name: Add RabbitMQ user (rmuser) permissions
+      command: rabbitmqctl set_user_tags rmuser administrator
+      when: inventory_hostname == groups['rabbitmq_nodes'][0]
+      ignore_errors: yes
+
+    - name: Delete default RabbitMQ user (guest)
+      command: rabbitmqctl delete_user guest
+      when: inventory_hostname == groups['rabbitmq_nodes'][0]
+      ignore_errors: yes
+
+    - name: Set permissions for rmuser on / vhost
+      command: rabbitmqctl set_permissions -p / rmuser ".*" ".*" ".*"
+      when: inventory_hostname == groups['rabbitmq_nodes'][0]
+      ignore_errors: yes
+
+    - block:
+        - name: Stop RabbitMQ Application
+          shell: rabbitmqctl stop_app
+          register: stop_app
+
+        - name: Reset RabbitMQ Node
+          shell: rabbitmqctl reset
+          when: stop_app is success
+          register: reset_node
+
+        - name: Join RabbitMQ cluster
+          shell: rabbitmqctl join_cluster rabbit@{{ hostvars[groups['rabbitmq_nodes'][0]]['ansible_hostname'] }}
+          when: reset_node is success
+          register: join_cluster
+
+        - name: Wait for Cluster Join to Complete
+          pause:
+            seconds: 5
+          when: join_cluster is success
+
+        - name: Start RabbitMQ Application
+          shell: rabbitmqctl start_app
+          when: join_cluster is success
+
+      when: inventory_hostname != groups['rabbitmq_nodes'][0]
+
+    - name: Set HA policy on all queues
+      shell: rabbitmqctl set_policy ha-all ".*" '{"ha-mode":"all"}'
+      when: inventory_hostname == groups['rabbitmq_nodes'][0]
